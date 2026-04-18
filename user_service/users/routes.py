@@ -15,6 +15,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi_limiter.depends import RateLimiter
+
 from users.schemas import UserResponseSchema, UserSchema
 
 SessionDep = Annotated[AsyncSession, Depends(db_helper.get_session)]
@@ -54,7 +56,11 @@ async def get_current_user(
     return user
 
 
-@router.post("/register", response_model=UserResponseSchema)
+@router.post(
+            "/register",
+            response_model=UserResponseSchema,
+            dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+            )
 async def register(user: UserSchema, session: SessionDep) -> UserResponseSchema:
     stmt = select(UserModel).where(UserModel.email == user.email)
     existing_user_result = await session.execute(stmt)
@@ -87,7 +93,11 @@ async def register(user: UserSchema, session: SessionDep) -> UserResponseSchema:
 
     return new_user
 
-@router.get("/by-email", response_model=UserResponseSchema)
+@router.get(
+        "/by-email",
+        response_model=UserResponseSchema,
+        dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+        )
 async def get_user_by_email(
     session: SessionDep, email: str = Query(...)
 ) -> UserResponseSchema:
@@ -103,7 +113,10 @@ async def get_user_by_email(
     return user
 
 
-@router.post("/login")
+@router.post(
+        "/login",
+        dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+        )
 async def login(
     response: Response,
     form: Annotated[OAuth2PasswordRequestForm, Depends()],
@@ -143,14 +156,22 @@ async def login(
 
 
 
-@router.get("", response_model=List[UserResponseSchema])
+@router.get(
+        "",
+        response_model=List[UserResponseSchema],
+        dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+        )
 async def get_all_users(session: SessionDep) -> List[UserResponseSchema]:
     stmt = select(UserModel)
     result = await session.execute(stmt)
     return result.scalars().all()
 
 
-@router.get("/{user_id}", response_model=UserResponseSchema)
+@router.get(
+        "/{user_id}",
+        response_model=UserResponseSchema,
+        dependencies=[Depends(RateLimiter(times=20, seconds=60))],
+        )
 async def get_user(user_id: int, session: SessionDep) -> UserResponseSchema:
     stmt = select(UserModel).where(UserModel.id == user_id)
     result = await session.execute(stmt)

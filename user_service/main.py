@@ -7,9 +7,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from users.routes import router as users_router
 
+from core.config import config
+
+from fastapi_limiter import FastAPILimiter
+from fastapi_limiter.depends import RateLimiter
+import redis.asyncio as redis
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    r = await redis.from_url(config.redis_url)
+    await FastAPILimiter.init(r)
     yield
     await db_helper.dispose()
 
@@ -30,6 +38,9 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
+
+
+
 
 
 @app.middleware("http")
