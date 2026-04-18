@@ -3,7 +3,7 @@ from .db import db_helper
 from .auth import create_access_token, create_refresh_token, decode_token
 from .utility import hash_password, verify_password
 from .models.base import Base
-from .models import UserModel, TaskModel
+from .models import UserModel
 
 __all__ = [
     "config",
@@ -15,5 +15,4 @@ __all__ = [
     "verify_password",
     "Base",
     "UserModel",
-    "TaskModel",
 ]

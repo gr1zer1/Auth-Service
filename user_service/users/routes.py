@@ -15,7 +15,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from users.schemas import TelegramLinkSchema, UserResponseSchema, UserSchema
+from users.schemas import UserResponseSchema, UserSchema
 
 SessionDep = Annotated[AsyncSession, Depends(db_helper.get_session)]
 
@@ -87,24 +87,6 @@ async def register(user: UserSchema, session: SessionDep) -> UserResponseSchema:
 
     return new_user
 
-
-@router.get("/telegram/{telegram_id}", response_model=UserResponseSchema)
-async def get_user_by_telegram_id(
-    telegram_id: int, session: SessionDep
-) -> UserResponseSchema:
-    stmt = select(UserModel).where(UserModel.telegram_id == telegram_id)
-    result = await session.execute(stmt)
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found for this Telegram ID",
-        )
-
-    return user
-
-
 @router.get("/by-email", response_model=UserResponseSchema)
 async def get_user_by_email(
     session: SessionDep, email: str = Query(...)
@@ -159,30 +141,6 @@ async def login(
     }
 
 
-@router.post("/telegram/link", response_model=UserResponseSchema)
-async def link_telegram_account(
-    payload: TelegramLinkSchema,
-    session: SessionDep,
-    current_user: UserModel = Depends(get_current_user),
-) -> UserResponseSchema:
-    stmt = select(UserModel).where(
-        UserModel.telegram_id == payload.telegram_id,
-        UserModel.id != current_user.id,
-    )
-    result = await session.execute(stmt)
-    existing_user = result.scalar_one_or_none()
-
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This Telegram account is already linked to another user",
-        )
-
-    current_user.telegram_id = payload.telegram_id
-    await session.commit()
-    await session.refresh(current_user)
-
-    return current_user
 
 
 @router.get("", response_model=List[UserResponseSchema])

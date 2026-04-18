@@ -16,6 +16,3 @@ class UserResponseSchema(BaseModel):
     is_service: bool
     telegram_id: int | None = None
 
-
-class TelegramLinkSchema(BaseModel):
-    telegram_id: int

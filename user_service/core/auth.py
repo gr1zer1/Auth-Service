@@ -15,7 +15,6 @@ def create_access_token(user_id: int, is_service: bool = False) -> str:
             "sub": str(user_id),
             "exp": expire,
             "type": "access",
-            "is_service": is_service,
         },
         key=config.jwt_secret_key,
         algorithm=config.jwt_algorithm,
