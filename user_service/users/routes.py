@@ -12,12 +12,12 @@ from core.config import config
 from core.auth import decode_token, require_role,create_access_token, create_refresh_token,verify_password, hash_password
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
+from sqlalchemy import select,update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi_limiter.depends import RateLimiter
 
-from users.schemas import UserResponseSchema, UserSchema
+from users.schemas import UserResponseSchema, UserSchema, ChangePasswordRequestSchema
 
 SessionDep = Annotated[AsyncSession, Depends(db_helper.get_session)]
 
@@ -42,6 +42,14 @@ async def get_current_user(
 
     payload = decode_token(token)
     user_id = payload.get("sub")
+    token_version = payload.get("token_version")
+    token_id = payload.get("jti")
+
+    if await db_helper.redis_pool.get(f"blacklist:{token_id}"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
+        )
+    
 
     stmt = select(UserModel).where(UserModel.id == int(user_id))
     result = await session.execute(stmt)
@@ -51,6 +59,12 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
+        )
+    
+    if user.token_version != token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
         )
     
     return user
@@ -78,7 +92,7 @@ async def register(
     new_user = UserModel(
         email=user.email,
         password=hash_password(user.password),
-        role=user.role,
+        role="user",
     )
 
     session.add(new_user)
@@ -200,8 +214,8 @@ async def get_user(user_id: int, session: SessionDep,_user:UserModel = Depends(r
     return user
 
 
-@router.get("/logout")
-async def logout(refresh_token: str | None = Cookie(default=None)) -> dict:
+@router.post("/logout")
+async def logout(response:Response,refresh_token: str | None = Cookie(default=None)) -> dict:
     if not refresh_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Missing refresh token"
@@ -215,11 +229,15 @@ async def logout(refresh_token: str | None = Cookie(default=None)) -> dict:
 
     await db_helper.redis_pool.set(f"blacklist:{jti}", "1", ex=ttl)
 
+    response.delete_cookie("refresh_token")
+
     return {"detail": "Logged out successfully"}
 
 @router.post("/refresh")
 async def refresh_token(
-    refresh_token: str | None = Cookie(default=None)
+    response: Response,
+    refresh_token: str | None = Cookie(default=None),
+    
 ) -> dict:
     if not refresh_token:
         raise HTTPException(
@@ -230,6 +248,7 @@ async def refresh_token(
     user_id = payload.get("sub")
     role = payload.get("role")
     jti = payload.get("jti")
+    exp = payload.get("exp")
 
     is_blacklisted = await db_helper.redis_pool.get(f"blacklist:{jti}")
     if is_blacklisted:
@@ -237,6 +256,40 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
         )
 
-    new_access_token = create_access_token(user_id,role)
+    new_access_token = create_access_token(user_id,role,jti)
+    new_refresh_token = create_refresh_token(user_id,role,jti)
+
+    await db_helper.redis_pool.set(f"blacklist:{jti}", "1", ex=exp - int(datetime.now(timezone.utc).timestamp()))
+
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        max_age=config.refresh_token_expire_days
+        * 24
+        * 60
+        * 60,
+        httponly=True,
+        samesite="lax",
+        secure=True,
+    )
+
 
     return {"access_token": new_access_token, "token_type": "bearer"}
+
+@router.post("/change-password")
+async def change_password(
+    data: ChangePasswordRequestSchema,
+    session: SessionDep,
+    current_user: UserModel = Depends(require_role("user", "admin")),
+):
+    if not verify_password(data.old_password, current_user.hashed_password):
+        raise HTTPException(400, "Invalid old password")
+
+    current_user.password = hash_password(data.new_password)
+
+    current_user.token_version += 1
+
+    await session.commit()
+    await session.refresh(current_user)
+
+    return {"detail": "Password changed successfully"}

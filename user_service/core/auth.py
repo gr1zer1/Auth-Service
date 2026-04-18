@@ -13,7 +13,7 @@ from .config import config
 from core.models import UserModel
 
 
-def create_access_token(user_id: int, role:str) -> str:
+def create_access_token(user_id: int, role:str, token_version:int) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=config.access_token_expire_minutes
     )
@@ -22,6 +22,7 @@ def create_access_token(user_id: int, role:str) -> str:
             "sub": str(user_id),
             "exp": expire,
             "role":role,
+            "token_version": token_version,
             "type": "access",
         },
         key=config.jwt_secret_key,
@@ -29,7 +30,7 @@ def create_access_token(user_id: int, role:str) -> str:
     )
 
 
-def create_refresh_token(user_id: int,role:str) -> str:
+def create_refresh_token(user_id: int,role:str,token_version:int) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         days=config.refresh_token_expire_days
     )
@@ -41,6 +42,8 @@ def create_refresh_token(user_id: int,role:str) -> str:
             "sub": str(user_id),
             "exp": expire,
             "jti": jti,
+            "role":role,
+            "token_version": token_version,
             "role": role,
             "type": "refresh"
         },
@@ -70,3 +73,4 @@ def require_role(*roles:str) -> callable:
             )
         return current_user
     return dependency
+
