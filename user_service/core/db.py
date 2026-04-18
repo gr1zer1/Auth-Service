@@ -13,7 +13,6 @@ class DBHelper:
     def __init__(
             self,
             url: str,
-            redis_pool:Redis,
             echo: bool = False,
             echo_pool: bool = False,
             pool_size: int = 5,

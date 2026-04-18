@@ -3,16 +3,13 @@ from typing import Annotated, List
 import datetime
 from datetime import timezone
 
-from core import (
-    UserModel,
-    config,
-    create_access_token,
-    create_refresh_token,
-    db_helper,
-    decode_token,
-    hash_password,
-    verify_password,
-)
+from core import UserModel
+
+from core.db import db_helper
+
+from core.config import config
+
+from core.auth import decode_token, require_role,create_access_token, create_refresh_token,verify_password, hash_password
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
@@ -55,7 +52,7 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-
+    
     return user
 
 
@@ -64,7 +61,11 @@ async def get_current_user(
             response_model=UserResponseSchema,
             dependencies=[Depends(RateLimiter(times=20, seconds=60))],
             )
-async def register(user: UserSchema, session: SessionDep) -> UserResponseSchema:
+async def register(
+    response: Response,
+    user: UserSchema,
+    session: SessionDep,
+) -> UserResponseSchema:
     stmt = select(UserModel).where(UserModel.email == user.email)
     existing_user_result = await session.execute(stmt)
 
@@ -74,27 +75,36 @@ async def register(user: UserSchema, session: SessionDep) -> UserResponseSchema:
             detail="User with this email already exists",
         )
 
-    if user.telegram_id is not None:
-        stmt = select(UserModel).where(UserModel.telegram_id == user.telegram_id)
-        existing_telegram_user = await session.execute(stmt)
-        if existing_telegram_user.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="This Telegram account is already linked to another user",
-            )
-
     new_user = UserModel(
         email=user.email,
         password=hash_password(user.password),
-        is_service=(user.email == "bot@service.com"),
-        telegram_id=user.telegram_id,
+        role=user.role,
     )
 
     session.add(new_user)
     await session.commit()
     await session.refresh(new_user)
 
-    return new_user
+    access_token = create_access_token(new_user.id,new_user.role )
+    refresh_token = create_refresh_token(new_user.id,new_user.role)
+
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        max_age=config.refresh_token_expire_days
+        * 24
+        * 60
+        * 60,
+        httponly=True,
+        samesite="lax",
+        secure=True,
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": UserResponseSchema.model_validate(new_user),
+    }
 
 @router.get(
         "/by-email",
@@ -102,7 +112,9 @@ async def register(user: UserSchema, session: SessionDep) -> UserResponseSchema:
         dependencies=[Depends(RateLimiter(times=20, seconds=60))],
         )
 async def get_user_by_email(
-    session: SessionDep, email: str = Query(...)
+    session: SessionDep,
+    email: str = Query(...),
+    _user:UserModel = Depends(require_role("admin")),
 ) -> UserResponseSchema:
     stmt = select(UserModel).where(UserModel.email == email)
     result = await session.execute(stmt)
@@ -135,8 +147,8 @@ async def login(
             detail="Incorrect email or password",
         )
 
-    access_token = create_access_token(user_data.id, is_service=user_data.is_service)
-    refresh_token = create_refresh_token(user_data.id)
+    access_token = create_access_token(user_data.id,user_data.role )
+    refresh_token = create_refresh_token(user_data.id,user_data.role)
 
     response.set_cookie(
         key="refresh_token",
@@ -163,7 +175,8 @@ async def login(
         "",
         response_model=List[UserResponseSchema],
         )
-async def get_all_users(session: SessionDep) -> List[UserResponseSchema]:
+    
+async def get_all_users(session: SessionDep,_user:UserModel = Depends(require_role("admin"))) -> List[UserResponseSchema]:
     stmt = select(UserModel)
     result = await session.execute(stmt)
     return result.scalars().all()
@@ -174,7 +187,7 @@ async def get_all_users(session: SessionDep) -> List[UserResponseSchema]:
         response_model=UserResponseSchema,
         dependencies=[Depends(RateLimiter(times=20, seconds=60))],
         )
-async def get_user(user_id: int, session: SessionDep) -> UserResponseSchema:
+async def get_user(user_id: int, session: SessionDep,_user:UserModel = Depends(require_role("admin"))) -> UserResponseSchema:
     stmt = select(UserModel).where(UserModel.id == user_id)
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
@@ -215,6 +228,7 @@ async def refresh_token(
 
     payload = decode_token(refresh_token)
     user_id = payload.get("sub")
+    role = payload.get("role")
     jti = payload.get("jti")
 
     is_blacklisted = await db_helper.redis_pool.get(f"blacklist:{jti}")
@@ -223,6 +237,6 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
         )
 
-    new_access_token = create_access_token(user_id)
+    new_access_token = create_access_token(user_id,role)
 
     return {"access_token": new_access_token, "token_type": "bearer"}

@@ -1,13 +1,19 @@
 from datetime import datetime, timedelta, timezone
 
+from fastapi import Depends, HTTPException, status
+
 import uuid
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
 
+from users.routes import get_current_user
+
 from .config import config
 
+from core.models import UserModel
 
-def create_access_token(user_id: int, is_service: bool = False) -> str:
+
+def create_access_token(user_id: int, role:str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=config.access_token_expire_minutes
     )
@@ -15,6 +21,7 @@ def create_access_token(user_id: int, is_service: bool = False) -> str:
         {
             "sub": str(user_id),
             "exp": expire,
+            "role":role,
             "type": "access",
         },
         key=config.jwt_secret_key,
@@ -22,7 +29,7 @@ def create_access_token(user_id: int, is_service: bool = False) -> str:
     )
 
 
-def create_refresh_token(user_id: int) -> str:
+def create_refresh_token(user_id: int,role:str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         days=config.refresh_token_expire_days
     )
@@ -34,6 +41,7 @@ def create_refresh_token(user_id: int) -> str:
             "sub": str(user_id),
             "exp": expire,
             "jti": jti,
+            "role": role,
             "type": "refresh"
         },
         config.jwt_secret_key,
@@ -51,3 +59,14 @@ def decode_token(token: str) -> dict:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Token!"
         )
+
+
+def require_role(*roles:str) -> callable:
+    async def dependency(current_user:UserModel = Depends(get_current_user)) -> UserModel:
+        if current_user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+        return current_user
+    return dependency

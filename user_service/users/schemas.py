@@ -4,7 +4,8 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 class UserSchema(BaseModel):
     email: EmailStr
     password: str
-    telegram_id: int | None = None
+    role: str
+    
 
 
 class UserResponseSchema(BaseModel):
@@ -12,7 +13,4 @@ class UserResponseSchema(BaseModel):
 
     id: int
     email: str
-    is_active: bool
-    is_service: bool
-    telegram_id: int | None = None
-
+    role: str
