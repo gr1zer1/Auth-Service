@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import uuid
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
 
@@ -25,8 +26,16 @@ def create_refresh_token(user_id: int) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         days=config.refresh_token_expire_days
     )
+    jti = str(uuid.uuid4())
+
+
     return jwt.encode(
-        {"sub": str(user_id), "exp": expire, "type": "refresh"},
+        {
+            "sub": str(user_id),
+            "exp": expire,
+            "jti": jti,
+            "type": "refresh"
+        },
         config.jwt_secret_key,
         config.jwt_algorithm,
     )

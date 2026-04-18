@@ -2,6 +2,10 @@ from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
+from redis.asyncio import Redis
+
+import redis.asyncio as redis
+
 from .config import config
 
 
@@ -9,6 +13,7 @@ class DBHelper:
     def __init__(
             self,
             url: str,
+            redis_pool:Redis,
             echo: bool = False,
             echo_pool: bool = False,
             pool_size: int = 5,
@@ -27,6 +32,7 @@ class DBHelper:
             autocommit=False,
             expire_on_commit=False,
         )
+        self.redis_pool = redis.from_url(config.redis_url)
 
     async def dispose(self):
         await self.engine.dispose()

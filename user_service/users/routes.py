@@ -1,5 +1,8 @@
 from typing import Annotated, List
 
+import datetime
+from datetime import timezone
+
 from core import (
     UserModel,
     config,
@@ -10,7 +13,7 @@ from core import (
     hash_password,
     verify_password,
 )
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -159,7 +162,6 @@ async def login(
 @router.get(
         "",
         response_model=List[UserResponseSchema],
-        dependencies=[Depends(RateLimiter(times=20, seconds=60))],
         )
 async def get_all_users(session: SessionDep) -> List[UserResponseSchema]:
     stmt = select(UserModel)
@@ -183,3 +185,44 @@ async def get_user(user_id: int, session: SessionDep) -> UserResponseSchema:
         )
 
     return user
+
+
+@router.get("/logout")
+async def logout(refresh_token: str | None = Cookie(default=None)) -> dict:
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Missing refresh token"
+        )
+
+    payload = decode_token(refresh_token)
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+
+    ttl = exp - int(datetime.now(timezone.utc).timestamp())
+
+    await db_helper.redis_pool.set(f"blacklist:{jti}", "1", ex=ttl)
+
+    return {"detail": "Logged out successfully"}
+
+@router.post("/refresh")
+async def refresh_token(
+    refresh_token: str | None = Cookie(default=None)
+) -> dict:
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Missing refresh token"
+        )
+
+    payload = decode_token(refresh_token)
+    user_id = payload.get("sub")
+    jti = payload.get("jti")
+
+    is_blacklisted = await db_helper.redis_pool.get(f"blacklist:{jti}")
+    if is_blacklisted:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
+        )
+
+    new_access_token = create_access_token(user_id)
+
+    return {"access_token": new_access_token, "token_type": "bearer"}
