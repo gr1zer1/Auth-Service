@@ -3,8 +3,19 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException, Response
 
-from users.routes import get_user_by_email, link_telegram_account, login, register
-from users.schemas import TelegramLinkSchema, UserSchema
+from core import UserModel
+from core.auth import require_role
+from core.utility import hash_password, verify_password
+from users.routes import (
+    change_password,
+    get_current_user,
+    get_user_by_email,
+    login,
+    logout,
+    refresh_token,
+    register,
+)
+from users.schemas import ChangePasswordRequestSchema, UserSchema
 
 
 class FakeResult:
@@ -22,15 +33,14 @@ class FakeSession:
         self.committed = False
         self.refreshed = []
 
-    async def execute(self, stmt):
+    async def execute(self, _stmt):
         if self.results:
             return FakeResult(self.results.pop(0))
         return FakeResult(None)
 
     def add(self, item):
-        item.id = getattr(item, "id", None) or 1
-        item.is_active = getattr(item, "is_active", True)
-        item.is_service = getattr(item, "is_service", False)
+        if getattr(item, "id", None) is None:
+            item.id = len(self.added) + 1
         self.added.append(item)
 
     async def commit(self):
@@ -40,28 +50,59 @@ class FakeSession:
         self.refreshed.append(item)
 
 
+class FakeRedisPool:
+    def __init__(self):
+        self.storage = {}
+        self.last_set = None
+
+    async def get(self, key):
+        return self.storage.get(key)
+
+    async def set(self, key, value, ex=None):
+        self.storage[key] = value
+        self.last_set = {"key": key, "value": value, "ex": ex}
+
+
+@pytest.fixture
+def redis_pool(monkeypatch):
+    from users import routes
+
+    fake_pool = FakeRedisPool()
+    monkeypatch.setattr(routes.db_helper, "redis_pool", fake_pool)
+    return fake_pool
+
+
 @pytest.mark.asyncio
-async def test_register_creates_new_user():
-    session = FakeSession(results=[None, None])
+async def test_register_creates_user_hashes_password_and_sets_refresh_cookie():
+    response = Response()
+    session = FakeSession(results=[None])
 
     result = await register(
-        UserSchema(email="user@example.com", password="secret123", telegram_id=123),
+        response,
+        UserSchema(email="user@example.com", password="secret123"),
         session,
     )
 
-    assert result.email == "user@example.com"
-    assert result.telegram_id == 123
+    created_user = session.added[0]
+
+    assert result["token_type"] == "bearer"
+    assert result["user"].email == "user@example.com"
+    assert created_user.email == "user@example.com"
+    assert created_user.role == "user"
+    assert created_user.password != "secret123"
+    assert verify_password("secret123", created_user.password)
     assert session.committed is True
-    assert len(session.added) == 1
+    assert session.refreshed == [created_user]
+    assert "refresh_token=" in response.headers["set-cookie"]
 
 
 @pytest.mark.asyncio
 async def test_register_rejects_duplicate_email():
-    existing_user = SimpleNamespace(email="user@example.com")
-    session = FakeSession(results=[existing_user])
+    session = FakeSession(results=[SimpleNamespace(email="user@example.com")])
 
     with pytest.raises(HTTPException) as exc:
         await register(
+            Response(),
             UserSchema(email="user@example.com", password="secret123"),
             session,
         )
@@ -71,74 +112,267 @@ async def test_register_rejects_duplicate_email():
 
 
 @pytest.mark.asyncio
-async def test_login_returns_token_payload():
-    existing_user = SimpleNamespace(
-        id=7,
-        email="user@example.com",
-        password="$2b$12$MBrZJQ4Q8cWlLkT3QpcqYu8uA6v7SKNVr7ZXJQunwQ7LwL2D2d8VW",
-        is_service=False,
-        is_active=True,
-        telegram_id=None,
+async def test_login_returns_tokens_and_user_payload():
+    session = FakeSession(
+        results=[
+            UserModel(
+                id=7,
+                email="user@example.com",
+                password=hash_password("secret123"),
+                role="admin",
+                token_version=3,
+            )
+        ]
     )
-    session = FakeSession(results=[existing_user])
-
-    from core.utility import hash_password
-
-    existing_user.password = hash_password("secret123")
+    response = Response()
 
     result = await login(
-        Response(),
+        response,
         SimpleNamespace(username="user@example.com", password="secret123"),
         session,
     )
 
     assert result["token_type"] == "bearer"
     assert result["user"].email == "user@example.com"
+    assert result["user"].role == "admin"
     assert result["access_token"]
+    assert "refresh_token=" in response.headers["set-cookie"]
 
 
 @pytest.mark.asyncio
-async def test_link_telegram_updates_user():
-    current_user = SimpleNamespace(id=5, telegram_id=None)
-    session = FakeSession(results=[None])
-
-    result = await link_telegram_account(
-        TelegramLinkSchema(telegram_id=999),
-        session,
-        current_user,
+async def test_login_rejects_wrong_password():
+    session = FakeSession(
+        results=[
+            UserModel(
+                id=7,
+                email="user@example.com",
+                password=hash_password("secret123"),
+                role="user",
+                token_version=0,
+            )
+        ]
     )
-
-    assert result.telegram_id == 999
-    assert session.committed is True
-
-
-@pytest.mark.asyncio
-async def test_link_telegram_rejects_conflict():
-    session = FakeSession(results=[SimpleNamespace(id=11, telegram_id=777)])
-    current_user = SimpleNamespace(id=5, telegram_id=None)
 
     with pytest.raises(HTTPException) as exc:
-        await link_telegram_account(
-            TelegramLinkSchema(telegram_id=777),
+        await login(
+            Response(),
+            SimpleNamespace(username="user@example.com", password="wrong-pass"),
             session,
-            current_user,
         )
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail == "This Telegram account is already linked to another user"
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Incorrect email or password"
 
 
 @pytest.mark.asyncio
-async def test_get_user_by_email_returns_existing_user():
-    existing_user = SimpleNamespace(
-        id=3,
-        email="lookup@example.com",
-        is_active=True,
-        is_service=False,
-        telegram_id=None,
-    )
-    session = FakeSession(results=[existing_user])
+async def test_get_current_user_requires_authorization_header():
+    with pytest.raises(HTTPException) as exc:
+        await get_current_user(FakeSession(), None)
 
-    result = await get_user_by_email("lookup@example.com", session)
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Missing Authorization header"
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_rejects_blacklisted_token(monkeypatch, redis_pool):
+    from users import routes
+
+    redis_pool.storage["blacklist:revoked-jti"] = "1"
+    monkeypatch.setattr(
+        routes,
+        "decode_token",
+        lambda _token: {"sub": "5", "token_version": 0, "jti": "revoked-jti"},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await get_current_user(
+            FakeSession(results=[UserModel(id=5, email="user@example.com", password="x", role="user", token_version=0)]),
+            "Bearer access-token",
+        )
+
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Token has been revoked"
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_rejects_token_version_mismatch(monkeypatch, redis_pool):
+    from users import routes
+
+    monkeypatch.setattr(
+        routes,
+        "decode_token",
+        lambda _token: {"sub": "5", "token_version": 1, "jti": "jti-1"},
+    )
+    session = FakeSession(
+        results=[
+            UserModel(
+                id=5,
+                email="user@example.com",
+                password="hashed",
+                role="user",
+                token_version=2,
+            )
+        ]
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await get_current_user(session, "Bearer access-token")
+
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Token has been revoked"
+
+
+@pytest.mark.asyncio
+async def test_get_user_by_email_returns_user():
+    session = FakeSession(
+        results=[
+            UserModel(id=3, email="lookup@example.com", password="hashed", role="user")
+        ]
+    )
+
+    result = await get_user_by_email(session, "lookup@example.com", SimpleNamespace(role="admin"))
 
     assert result.email == "lookup@example.com"
+
+
+@pytest.mark.asyncio
+async def test_logout_blacklists_refresh_token_and_clears_cookie(monkeypatch, redis_pool):
+    from users import routes
+
+    monkeypatch.setattr(
+        routes,
+        "decode_token",
+        lambda _token: {"jti": "refresh-1", "exp": 4_200_000_000},
+    )
+    response = Response()
+
+    result = await logout(response, "refresh-token")
+
+    assert result == {"detail": "Logged out successfully"}
+    assert redis_pool.last_set["key"] == "blacklist:refresh-1"
+    assert redis_pool.last_set["value"] == "1"
+    assert "refresh_token=\"\"" in response.headers["set-cookie"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_rotates_tokens_and_blacklists_previous_token(monkeypatch, redis_pool):
+    from users import routes
+
+    monkeypatch.setattr(
+        routes,
+        "decode_token",
+        lambda _token: {
+            "sub": "7",
+            "role": "admin",
+            "jti": "refresh-1",
+            "exp": 4_200_000_000,
+            "token_version": 3,
+        },
+    )
+    response = Response()
+
+    result = await refresh_token(response, "refresh-token")
+
+    assert result["token_type"] == "bearer"
+    assert result["access_token"]
+    assert redis_pool.last_set["key"] == "blacklist:refresh-1"
+    assert "refresh_token=" in response.headers["set-cookie"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_rejects_blacklisted_token(monkeypatch, redis_pool):
+    from users import routes
+
+    redis_pool.storage["blacklist:refresh-1"] = "1"
+    monkeypatch.setattr(
+        routes,
+        "decode_token",
+        lambda _token: {
+            "sub": "7",
+            "role": "admin",
+            "jti": "refresh-1",
+            "exp": 4_200_000_000,
+            "token_version": 3,
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await refresh_token(Response(), "refresh-token")
+
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Token has been revoked"
+
+
+@pytest.mark.asyncio
+async def test_change_password_updates_hash_and_token_version():
+    user = UserModel(
+        id=11,
+        email="user@example.com",
+        password=hash_password("old-secret"),
+        role="user",
+        token_version=2,
+    )
+    response = Response()
+    session = FakeSession()
+
+    result = await change_password(
+        response,
+        ChangePasswordRequestSchema(
+            old_password="old-secret",
+            new_password="new-secret123",
+        ),
+        session,
+        user,
+    )
+
+    assert result["detail"] == "Password changed successfully"
+    assert result["token_type"] == "bearer"
+    assert verify_password("new-secret123", user.password)
+    assert user.token_version == 3
+    assert session.committed is True
+    assert session.refreshed == [user]
+    assert "refresh_token=" in response.headers["set-cookie"]
+
+
+@pytest.mark.asyncio
+async def test_change_password_rejects_invalid_old_password():
+    user = UserModel(
+        id=11,
+        email="user@example.com",
+        password=hash_password("old-secret"),
+        role="user",
+        token_version=2,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await change_password(
+            Response(),
+            ChangePasswordRequestSchema(
+                old_password="wrong-secret",
+                new_password="new-secret123",
+            ),
+            FakeSession(),
+            user,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Invalid old password"
+
+
+@pytest.mark.asyncio
+async def test_require_role_rejects_forbidden_role():
+    dependency = require_role("admin")
+
+    with pytest.raises(HTTPException) as exc:
+        await dependency(current_user=SimpleNamespace(role="user"))
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Insufficient permissions"
+
+
+def test_change_password_schema_rejects_same_password():
+    with pytest.raises(ValueError, match="New password must be different from old password"):
+        ChangePasswordRequestSchema(
+            old_password="same-secret",
+            new_password="same-secret",
+        )

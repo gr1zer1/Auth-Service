@@ -1,16 +1,11 @@
 from datetime import datetime, timedelta, timezone
+import uuid
 
 from fastapi import Depends, HTTPException, status
-
-import uuid
-from fastapi import HTTPException, status
 from jose import JWTError, jwt
 
-from users.routes import get_current_user
-
 from .config import config
-
-from core.models import UserModel
+from .models.user import UserModel
 
 
 def create_access_token(user_id: int, role:str, token_version:int | None = 0) -> str:
@@ -64,13 +59,17 @@ def decode_token(token: str) -> dict:
         )
 
 
-def require_role(*roles:str) -> callable:
-    async def dependency(current_user:UserModel = Depends(get_current_user)) -> UserModel:
+def require_role(*roles: str) -> callable:
+    from users.routes import get_current_user
+
+    async def dependency(
+        current_user: UserModel = Depends(get_current_user),
+    ) -> UserModel:
         if current_user.role not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions",
             )
         return current_user
-    return dependency
 
+    return dependency

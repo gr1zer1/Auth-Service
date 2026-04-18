@@ -1,7 +1,6 @@
 from typing import Annotated, List
 
-import datetime
-from datetime import timezone
+from datetime import datetime, timezone
 
 from core import UserModel
 
@@ -9,7 +8,8 @@ from core.db import db_helper
 
 from core.config import config
 
-from core.auth import decode_token, require_role,create_access_token, create_refresh_token,verify_password, hash_password
+from core.auth import decode_token, require_role, create_access_token, create_refresh_token
+from core.utility import hash_password, verify_password
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select,update
@@ -268,7 +268,11 @@ async def refresh_token(
     new_access_token = create_access_token(user_id,role,token_version)
     new_refresh_token = create_refresh_token(user_id,role,token_version)
 
-    await db_helper.redis_pool.set(f"blacklist:{jti}", "1", ex=exp - int(datetime.now(timezone.utc).timestamp()))
+    await db_helper.redis_pool.set(
+        f"blacklist:{jti}",
+        "1",
+        ex=exp - int(datetime.now(timezone.utc).timestamp()),
+    )
 
     response.set_cookie(
         key="refresh_token",
@@ -292,7 +296,7 @@ async def change_password(
     session: SessionDep,
     current_user: UserModel = Depends(require_role("user", "admin")),
 ):
-    if not verify_password(data.old_password, current_user.hashed_password):
+    if not verify_password(data.old_password, current_user.password):
         raise HTTPException(400, "Invalid old password")
 
     current_user.password = hash_password(data.new_password)

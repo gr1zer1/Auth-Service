@@ -1,6 +1,5 @@
 from core import (
     Base,
-    TaskModel,
     UserModel,
     config,
     create_access_token,
@@ -19,7 +18,6 @@ def test_core_imports_are_available():
     assert db_helper is not None
     assert Base is not None
     assert UserModel is not None
-    assert TaskModel is not None
     assert create_access_token is not None
     assert create_refresh_token is not None
     assert decode_token is not None
