@@ -1,10 +1,9 @@
-from pydantic import BaseModel, ConfigDict, EmailStr,Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr,Field, model_validator
 
 
 class UserSchema(BaseModel):
     email: EmailStr
-    password: str
-    role: str
+    password: str = Field(min_length=8)
     
 
 
@@ -13,14 +12,15 @@ class UserResponseSchema(BaseModel):
 
     id: int
     email: str
+    role: str
 
 
 class ChangePasswordRequestSchema(BaseModel):
     old_password: str
     new_password: str = Field(min_length=8)
 
-    @field_validator("new_password")
-    def passwords_not_same(cls, new, values):
-        if new == values.data.get("old_password"):
-            raise ValueError("New password must differ from old one")
-        return new
+    @model_validator(mode="after")
+    def validate_passwords(self):
+        if self.old_password == self.new_password:
+            raise ValueError("New password must be different from old password")
+        return self

@@ -24,6 +24,8 @@ SessionDep = Annotated[AsyncSession, Depends(db_helper.get_session)]
 router = APIRouter(tags=["Users"])
 
 
+
+
 async def get_current_user(
     session: SessionDep, authorization: str | None = Header(default=None)
 ) -> UserModel:
@@ -68,6 +70,9 @@ async def get_current_user(
         )
     
     return user
+
+
+
 
 
 @router.post(
@@ -142,6 +147,9 @@ async def get_user_by_email(
     return user
 
 
+
+
+
 @router.post(
         "/login",
         dependencies=[Depends(RateLimiter(times=20, seconds=60))],
@@ -161,8 +169,8 @@ async def login(
             detail="Incorrect email or password",
         )
 
-    access_token = create_access_token(user_data.id,user_data.role )
-    refresh_token = create_refresh_token(user_data.id,user_data.role)
+    access_token = create_access_token(user_data.id,user_data.role, user_data.token_version)
+    refresh_token = create_refresh_token(user_data.id,user_data.role, user_data.token_version)
 
     response.set_cookie(
         key="refresh_token",
@@ -249,6 +257,7 @@ async def refresh_token(
     role = payload.get("role")
     jti = payload.get("jti")
     exp = payload.get("exp")
+    token_version = payload.get("token_version")
 
     is_blacklisted = await db_helper.redis_pool.get(f"blacklist:{jti}")
     if is_blacklisted:
@@ -256,14 +265,14 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
         )
 
-    new_access_token = create_access_token(user_id,role,jti)
-    new_refresh_token = create_refresh_token(user_id,role,jti)
+    new_access_token = create_access_token(user_id,role,token_version)
+    new_refresh_token = create_refresh_token(user_id,role,token_version)
 
     await db_helper.redis_pool.set(f"blacklist:{jti}", "1", ex=exp - int(datetime.now(timezone.utc).timestamp()))
 
     response.set_cookie(
         key="refresh_token",
-        value=refresh_token,
+        value=new_refresh_token,
         max_age=config.refresh_token_expire_days
         * 24
         * 60
@@ -278,6 +287,7 @@ async def refresh_token(
 
 @router.post("/change-password")
 async def change_password(
+    response:Response,
     data: ChangePasswordRequestSchema,
     session: SessionDep,
     current_user: UserModel = Depends(require_role("user", "admin")),
@@ -292,4 +302,24 @@ async def change_password(
     await session.commit()
     await session.refresh(current_user)
 
-    return {"detail": "Password changed successfully"}
+    new_access_token = create_access_token(current_user.id, current_user.role, current_user.token_version)
+    new_refresh_token = create_refresh_token(current_user.id, current_user.role, current_user.token_version)
+
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh_token,
+        max_age=config.refresh_token_expire_days
+        * 24
+        * 60
+        * 60,
+        httponly=True,
+        samesite="lax",
+        secure=True,
+    )
+
+    
+    return {
+        "access_token": new_access_token,
+        "token_type": "bearer",
+        "detail": "Password changed successfully"
+    }

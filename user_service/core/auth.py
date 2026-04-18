@@ -13,7 +13,7 @@ from .config import config
 from core.models import UserModel
 
 
-def create_access_token(user_id: int, role:str, token_version:int) -> str:
+def create_access_token(user_id: int, role:str, token_version:int | None = 0) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=config.access_token_expire_minutes
     )
@@ -30,7 +30,7 @@ def create_access_token(user_id: int, role:str, token_version:int) -> str:
     )
 
 
-def create_refresh_token(user_id: int,role:str,token_version:int) -> str:
+def create_refresh_token(user_id: int,role:str,token_version:int | None = 0) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         days=config.refresh_token_expire_days
     )
