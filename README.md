@@ -103,6 +103,34 @@ The service will be available at `http://localhost:8001`.
 
 Interactive API docs: `http://localhost:8001/docs`
 
+## Running Tests
+
+Tests are located in the `user_service/tests/` directory and use **pytest**.
+
+### Run all tests
+
+```bash
+pytest user_service/
+```
+
+### Run tests with verbose output
+
+```bash
+pytest user_service/ -v
+```
+
+### Run specific test file
+
+```bash
+pytest user_service/tests/test_users.py -v
+```
+
+### Run tests with coverage
+
+```bash
+pytest user_service/ --cov=user_service --cov-report=html
+```
+
 ## Project Structure
 
 ```
